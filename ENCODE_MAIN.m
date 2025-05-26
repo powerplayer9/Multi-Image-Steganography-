@@ -1,323 +1,377 @@
-clc;
-close all;
-clear all;
+function ENCODE_MAIN()
+%% IMAGE STEGANOGRAPHY - ENCODING MODULE
+% This function encodes a text message into a set of images using 
+% steganographic techniques. The message is hidden by modifying pixel
+% values based on keys derived from a Google Drive URL.
 
-%% URL read & get key data
+    clc;
+    close all;
+    clear all;
 
-User_input_URL = inputdlg('Enter URL:',...
-             'ENCODE - URL', [1 100]);
-
-         URL = User_input_URL{1};
-%URL = 'https://drive.google.com/drive/u/0/folders/0B9pIMjMgQ6y4WFVtNllvYTNLOEU';
-size_URL = size(URL,2);
-
-
-k = strfind(URL,'ers/');
-k = k + 4;
-
-Key_main = URL(k:size_URL);
-size_keymain = size(Key_main,2);
-
-% 28char key -> 7-6-7-8
-% 7 - key for jumping original image
-% 6 - key for jumping pixel coordinates
-% 7 - key for jumping modifined image
-% 8 - key to jump & select original & modified image
-Key_origin_jump = Key_main(1 : 7);
-Key_pixel_jump = Key_main(8 : 13);
-Key_modified_jump = Key_main(14 : 20);
-Key_image_split = Key_main(21 : size_keymain);
-
-size_origin_jump = size(Key_origin_jump);
-size_pixel_jump = size(Key_pixel_jump);
-size_modified_jump = size(Key_modified_jump);
-size_image_split = size(Key_image_split);
-
-%% Get Message & encode
-
-User_input = inputdlg('Enter Message (1500 char):',...
-             'ENCODE - Message', [30 100]);
-         
-msg_1 = lower(User_input{1});
-end_of_msg = 'ง';
-msg = strcat(msg_1,end_of_msg);
-size_msg = size(msg);
-
-parfor i = 1 : size_msg(2)
-    [msg_en(i,:)] = encode_char(msg(i)); % Encoded message variable
-end
-
-
-%% Get file Path
-%Parent_path = 'E:\Education\ANU\ENGN6528- Comp Vision\Project\Code';
-Parent_path = pwd;
-PathName = uigetdir(Parent_path,'Select the folder');
-
-file3 = '*';
-
-train_filenames3 = dir([PathName '/' file3]);    % return a structure with filenames
-
-
-%% Remove '.' & '..' hidden directory files
-
-while (train_filenames3(1).isdir == 1)
-    train_filenames3(1) = [];
-end
-
-size_data = length(train_filenames3);
-
-%%
-
-parfor i = 1 : size_data
-    filename = [train_filenames3(i).folder '\' train_filenames3(i).name];   % filename in the list
-    Img{i} = imread(filename);
-end
-
-%save (' imageload.mat','Img');
-
-
-%% Key data to numbers
-% ASCII decode
-
-Ascii_origin_jump = double(Key_origin_jump);
-Ascii_pixel_jump = double(Key_pixel_jump);
-Ascii_modified_jump = double(Key_modified_jump);
-Ascii_image_split = double(Key_image_split);
-
-%% Find original & modify image index in full image set data
-% To split Image index to image that will be modified and not
-if (rem(size_data,2) == 0)
-    size_halfdata = size_data / 2;
-else
-    size_halfdata = (size_data-1) / 2;
-end
-
-k = 1;
-j = 1;
-img_index_Mod = 0;
-n = 1;
-%for i = 1 : size_halfdata
-while n <= size_halfdata
+    %% SECTION 1: Initialize and get user inputs
+    fprintf('=== IMAGE STEGANOGRAPHY ENCODER ===\n');
     
-    k = k + Ascii_image_split(j);
+    % Get URL from user and extract encryption keys
+    url = getUserURL();
+    keys = extractKeysFromURL(url);
     
-    while k > (2 * size_halfdata)
-        diff = k - (2 * size_halfdata);
-        k = diff;
-        if k <= 0
-            break;
+    % Get message to encode
+    message = getUserMessage();
+    encodedMessage = encodeMessageToRGB(message);
+    
+    % Get image folder path
+    imagePath = selectImageFolder();
+    images = loadImages(imagePath);
+    
+    fprintf('Loaded %d images for encoding\n', length(images));
+    
+    %% SECTION 2: Prepare images and indices
+    [originalIndices, modifiedIndices] = splitImageIndices(images, keys.imageSplit);
+    
+    % Initialize 4D image array (RGB + flag channel)
+    images4D = initializeImageFlags(images);
+    
+    %% SECTION 3: Encode message into images
+    fprintf('Starting encoding process...\n');
+    encodingStats = encodeMessageIntoImages(images, images4D, encodedMessage, ...
+                                          originalIndices, modifiedIndices, keys);
+    
+    %% SECTION 4: Save encoded images
+    saveEncodedImages(images, imagePath);
+    
+    %% SECTION 5: Calculate and display statistics
+    similarityIndex = calculateSimilarityIndex(images4D);
+    displayEncodingResults(encodingStats, similarityIndex);
+    
+    msgbox('ENCODING DONE!', 'Success');
+end
+
+%% HELPER FUNCTIONS
+
+function url = getUserURL()
+    % Get URL input from user
+    userInput = inputdlg('Enter Google Drive URL:', 'ENCODE - URL', [1 100]);
+    url = userInput{1};
+    
+    if isempty(url)
+        error('URL cannot be empty');
+    end
+end
+
+function keys = extractKeysFromURL(url)
+    % Extract encryption keys from Google Drive URL
+    % Keys are derived from the folder ID after 'ers/'
+    
+    folderIdStart = strfind(url, 'ers/') + 4;
+    if isempty(folderIdStart)
+        error('Invalid Google Drive URL format');
+    end
+    
+    keyString = url(folderIdStart:end);
+    keyLength = length(keyString);
+    
+    if keyLength < 28
+        error('URL too short to generate sufficient keys');
+    end
+    
+    % Split key into 4 parts: 7-6-7-8 characters
+    keys.originJump = keyString(1:7);           % Key for jumping between original images
+    keys.pixelJump = keyString(8:13);           % Key for jumping pixel coordinates  
+    keys.modifiedJump = keyString(14:20);       % Key for jumping between modified images
+    keys.imageSplit = keyString(21:end);        % Key for selecting which images to modify
+    
+    % Convert to ASCII values for calculations
+    keys.originJumpASCII = double(keys.originJump);
+    keys.pixelJumpASCII = double(keys.pixelJump);
+    keys.modifiedJumpASCII = double(keys.modifiedJump);
+    keys.imageSplitASCII = double(keys.imageSplit);
+end
+
+function message = getUserMessage()
+    % Get message input from user
+    userInput = inputdlg('Enter Message (max 1500 characters):', ...
+                        'ENCODE - Message', [30 100]);
+    message = lower(userInput{1});
+    
+    if length(message) > 1500
+        error('Message too long. Maximum 1500 characters allowed.');
+    end
+    
+    % Add end-of-message marker
+    message = [message, 'ยง'];
+end
+
+function encodedMessage = encodeMessageToRGB(message)
+    % Convert each character to RGB values for encoding
+    messageLength = length(message);
+    encodedMessage = zeros(messageLength, 3);
+    
+    for i = 1:messageLength
+        encodedMessage(i, :) = encode_char(message(i));
+    end
+end
+
+function imagePath = selectImageFolder()
+    % Let user select folder containing images
+    currentPath = pwd;
+    imagePath = uigetdir(currentPath, 'Select folder containing images to encode');
+    
+    if imagePath == 0
+        error('No folder selected');
+    end
+end
+
+function images = loadImages(imagePath)
+    % Load all images from selected folder
+    imageFiles = dir([imagePath, '/*']);
+    
+    % Remove directory entries
+    imageFiles = imageFiles(~[imageFiles.isdir]);
+    
+    if isempty(imageFiles)
+        error('No image files found in selected folder');
+    end
+    
+    numImages = length(imageFiles);
+    images = cell(numImages, 1);
+    
+    % Load images in parallel for efficiency
+    parfor i = 1:numImages
+        filename = fullfile(imageFiles(i).folder, imageFiles(i).name);
+        images{i} = imread(filename);
+    end
+end
+
+function [originalIndices, modifiedIndices] = splitImageIndices(images, imageSplitKey)
+    % Split images into two groups: original (reference) and modified (encoded)
+    numImages = length(images);
+    halfSize = floor(numImages / 2);
+    
+    % Determine which images will be modified based on key
+    modifiedIndices = [];
+    keyASCII = double(imageSplitKey);
+    keyLength = length(keyASCII);
+    
+    currentIndex = 1;
+    keyPosition = 1;
+    
+    while length(modifiedIndices) < halfSize
+        currentIndex = currentIndex + keyASCII(keyPosition);
+        
+        % Wrap around if index exceeds available images
+        while currentIndex > (2 * halfSize)
+            currentIndex = currentIndex - (2 * halfSize);
+        end
+        
+        if currentIndex > 0 && ~ismember(currentIndex, modifiedIndices)
+            modifiedIndices(end + 1) = currentIndex;
+        end
+        
+        keyPosition = keyPosition + 1;
+        if keyPosition > keyLength
+            keyPosition = 1;
         end
     end
     
-    if (img_index_Mod(:) ~= k)
-        if (k > 0)
-            img_index_Mod(n) = k ;
-            n = n+1;
-        end
-    end
+    modifiedIndices = sort(modifiedIndices);
     
-    j = j+1;
-    if j > size_image_split
-        j = 1;
-    end
-    
+    % Remaining images are originals
+    allIndices = 1:(2 * halfSize);
+    originalIndices = setdiff(allIndices, modifiedIndices);
 end
 
-img_index_Mod = sort (img_index_Mod);
-
-n = 1;
-for i = 1 : (2 * size_halfdata)
-    if i ~= img_index_Mod(:)
-        img_index_Ori(n) = i;
-        n = n + 1;
+function images4D = initializeImageFlags(images)
+    % Add a 4th channel to track which pixels have been modified
+    numImages = length(images);
+    images4D = cell(numImages, 1);
+    
+    parfor i = 1:numImages
+        imageSize = size(images{i});
+        flagChannel = zeros(imageSize(1:2));
+        
+        images4D{i} = cat(3, images{i}, flagChannel);
     end
 end
 
-
-%% Change mod_img pix values
-% To encode the image with the message
-ind_ori = 1; %Index of original
-ind_mod = 1; %Index of modified
-ind_cood_ori = [1 1]; %coordinate index of original
-ind_cood_mod = [1 1]; %coordinate index of modified
-
-i_Done = [0 0 0 0 0 0];
-i_D_count = 1;
-ind_img_jump = 1;
-ind_pixel_jump = 1;
-
-% Flag for checking modification
-parfor i = 1 : size_data
-    size_dume_image = size(Img{i});
-    z = zeros (size_dume_image(1:2));
-    Img_4d{i}(:,:,:) = Img{i};
-    Img_4d{i}(:,:,4) = z;
+function stats = encodeMessageIntoImages(images, images4D, encodedMessage, ...
+                                       originalIndices, modifiedIndices, keys)
+    % Main encoding loop - hide message in image pixels
     
+    messageLength = size(encodedMessage, 1);
+    stats.processedPixels = 0;
+    stats.modifiedImages = length(modifiedIndices);
+    
+    % Initialize indices and positions
+    originalImageIdx = 1;
+    modifiedImageIdx = 1;
+    originalPixelPos = [1, 1];
+    modifiedPixelPos = [1, 1];
+    
+    keyJumpIdx = 1;
+    pixelJumpIdx = 1;
+    
+    % Process each character in the message
+    for charIdx = 1:messageLength
+        % Find next available pixel pair
+        while images4D{modifiedIndices(modifiedImageIdx)}(modifiedPixelPos(1), modifiedPixelPos(2), 4) == 1
+            [originalImageIdx, modifiedImageIdx, originalPixelPos, modifiedPixelPos, ...
+             keyJumpIdx, pixelJumpIdx] = jumpToNextPixel(originalImageIdx, modifiedImageIdx, ...
+                                                       originalPixelPos, modifiedPixelPos, ...
+                                                       keyJumpIdx, pixelJumpIdx, ...
+                                                       originalIndices, modifiedIndices, ...
+                                                       images, keys);
+        end
+        
+        % Encode character at current pixel position
+        encodeCharacterAtPixel(images, originalIndices, modifiedIndices, ...
+                             originalImageIdx, modifiedImageIdx, ...
+                             originalPixelPos, modifiedPixelPos, ...
+                             encodedMessage(charIdx, :));
+        
+        % Mark pixels as used
+        images4D{originalIndices(originalImageIdx)}(originalPixelPos(1), originalPixelPos(2), 4) = 1;
+        images4D{modifiedIndices(modifiedImageIdx)}(modifiedPixelPos(1), modifiedPixelPos(2), 4) = 1;
+        
+        stats.processedPixels = stats.processedPixels + 1;
+        
+        % Move to next pixel position
+        [originalImageIdx, modifiedImageIdx, originalPixelPos, modifiedPixelPos, ...
+         keyJumpIdx, pixelJumpIdx] = jumpToNextPixel(originalImageIdx, modifiedImageIdx, ...
+                                                   originalPixelPos, modifiedPixelPos, ...
+                                                   keyJumpIdx, pixelJumpIdx, ...
+                                                   originalIndices, modifiedIndices, ...
+                                                   images, keys);
+    end
 end
 
-%Encoding of image
-while i_D_count <= size_msg(2)
+function [origIdx, modIdx, origPos, modPos, keyIdx, pixelIdx] = ...
+         jumpToNextPixel(origIdx, modIdx, origPos, modPos, keyIdx, pixelIdx, ...
+                        originalIndices, modifiedIndices, images, keys)
+    % Calculate next pixel positions based on keys
     
+    halfSize = length(originalIndices);
     
-    if Img_4d{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),4) ~= 1
-        
-        i_Done(i_D_count,1:6) = [ img_index_Ori(ind_ori) ind_cood_ori(1) ind_cood_ori(2) ...
-            img_index_Mod(ind_mod) ind_cood_mod(1) ind_cood_mod(2)];
-        
-        %Access pixel original img
-        pix_val = Img{img_index_Ori(ind_ori)}(ind_cood_ori(1), ind_cood_ori(2),:);
-        
-        %If original pixel vaiue is 245+
-        if pix_val(:,:,1) > 254 || pix_val(:,:,2) > 254 || pix_val(:,:,3) > 254
-            
-            pix_val(:,:,1) = 0;
-            pix_val(:,:,2) = 0;
-            pix_val(:,:,3) = 0;
-            
-        end
-               
-        %copy mod pixel value to dummy
-        pix_val_2 = Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),:);
-        
-        %copy original pixel value to target image
-        Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),:) = pix_val;
-        
-        
-        
-        R = msg_en(i_D_count,1);
-        G = msg_en(i_D_count,2);
-        B = msg_en(i_D_count,3);
-        
-        
-        %pre-mod values
-        i_Done(i_D_count,7:9) = [ ...
-            Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),1) ...
-            Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),2) ...
-            Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),3) ];
-        
-        %R value change
-        Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),1) = ...
-            Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),1) + R;
-        %G value change
-        Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),2) = ...
-            Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),2) + G;
-        %B value change
-        Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),3) = ...
-            Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),3) + B;
-        
-        
-        %Modified values
-        i_Done(i_D_count,10:12) = [ ...
-            Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),1) ...
-            Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),2) ...
-            Img{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),3) ];
-        
-        %original valueas
-        i_Done(i_D_count,13:15) = [ ...
-            Img{img_index_Ori(ind_ori)}(ind_cood_ori(1), ind_cood_ori(2),1) ...
-            Img{img_index_Ori(ind_ori)}(ind_cood_ori(1), ind_cood_ori(2),2) ...
-            Img{img_index_Ori(ind_ori)}(ind_cood_ori(1), ind_cood_ori(2),3) ];
-        
-        Img_4d{img_index_Ori(ind_ori)}(ind_cood_ori(1), ind_cood_ori(2),4) = 1;
-        Img_4d{img_index_Mod(ind_mod)}(ind_cood_mod(1), ind_cood_mod(2),4) = 1;
-        
-        i_D_count = i_D_count + 1;
-        
+    % Jump to next images
+    origIdx = origIdx + keys.originJumpASCII(keyIdx);
+    modIdx = modIdx + keys.originJumpASCII(keyIdx);
+    
+    % Handle wraparound for image indices
+    origIdx = wrapIndex(origIdx, halfSize);
+    modIdx = wrapIndex(modIdx, halfSize);
+    
+    % Jump to next pixel coordinates
+    origPos(1) = origPos(1) + keys.pixelJumpASCII(pixelIdx);
+    modPos(1) = modPos(1) + keys.pixelJumpASCII(pixelIdx);
+    
+    % Handle wraparound for pixel coordinates
+    origPos = wrapPixelCoordinates(origPos, size(images{originalIndices(origIdx)}));
+    modPos = wrapPixelCoordinates(modPos, size(images{modifiedIndices(modIdx)}));
+    
+    % Update key indices
+    keyIdx = keyIdx + 1;
+    pixelIdx = pixelIdx + 1;
+    
+    if keyIdx > length(keys.originJumpASCII)
+        keyIdx = 1;
     end
     
-    %Image jump control
-    ind_ori = ind_ori + Ascii_origin_jump(ind_img_jump);
-    while ind_ori > (size_halfdata)
-        diff = ind_ori - (size_halfdata);
-        ind_ori = diff;
-        if ind_ori <= 0
-            break;
-        end
+    if pixelIdx > length(keys.pixelJumpASCII)
+        pixelIdx = 1;
     end
-    
-    ind_mod = ind_mod + Ascii_origin_jump(ind_img_jump);
-    while ind_mod > (size_halfdata)
-        diff = ind_mod - (size_halfdata);
-        ind_mod = diff;
-        if ind_mod <= 0
-            break;
-        end
-    end
-    
-    %     ind_cood_ori = [1 1]; %coordinate index of original
-    %     ind_cood_mod = [1 1]; %coordinate index of modified
-    
-    ind_cood_ori(1) = ind_cood_ori(1) + Ascii_pixel_jump(ind_pixel_jump);
-    ind_cood_mod(1) = ind_cood_mod(1) + Ascii_pixel_jump(ind_pixel_jump);
-    
-    %if original pixel is out of bound for mod image.
-    %     if
-    
-    %Pixel jump control
-    
-    size_ori_curr_image = size(Img{img_index_Ori(ind_ori)});
-    while ind_cood_ori (1) > (size_ori_curr_image (1))
-        diff = ind_cood_ori(1) - (size_ori_curr_image(1));
-        ind_cood_ori(2) = ind_cood_ori(2) + 1;
-        ind_cood_ori(1) = diff;
-        if ind_cood_ori(1) <= 0
-            break;
-        end
-    end
-    
-    size_mod_curr_image = size(Img{img_index_Mod(ind_mod)});
-    while ind_cood_mod(1) > (size_mod_curr_image (1))
-        diff = ind_cood_mod(1) - (size_mod_curr_image(1));
-        ind_cood_mod(2) = ind_cood_mod(2) + 1;
-        ind_cood_mod(1) = diff;
-        if ind_cood_mod(1) <= 0
-            break;
-        end
-    end
-    
-    
-    ind_img_jump = ind_img_jump + 1;
-    ind_pixel_jump = ind_pixel_jump + 1;
-    
-    if ind_img_jump == size_origin_jump(2)
-        ind_img_jump = 1;
-    end
-    
-    if ind_pixel_jump == size_pixel_jump(2)
-        ind_pixel_jump = 1;
-    end
-    
 end
 
-%% Save the modified images
-
-mkdir (Parent_path,'Encoded Output Folder');
-savepath = 'Encoded Output Folder/';
-
-
-for i = 1 : size_data
-    filename = [savepath train_filenames3(i).name];   % filename in the list
-    Image_back_to_3D = Img{i}(:,:,1:3);
-    imwrite(Image_back_to_3D,filename, 'Mode', 'lossless');
+function wrappedIndex = wrapIndex(index, maxValue)
+    % Wrap index within valid range
+    while index > maxValue
+        index = index - maxValue;
+    end
+    if index <= 0
+        index = 1;
+    end
+    wrappedIndex = index;
 end
 
-h=msgbox('ENCODING DONE!')
+function wrappedPos = wrapPixelCoordinates(pos, imageSize)
+    % Wrap pixel coordinates within image bounds
+    while pos(1) > imageSize(1)
+        pos(1) = pos(1) - imageSize(1);
+        pos(2) = pos(2) + 1;
+    end
+    
+    if pos(1) <= 0
+        pos(1) = 1;
+    end
+    
+    if pos(2) > imageSize(2)
+        pos(2) = imageSize(2);
+    end
+    
+    wrappedPos = pos;
+end
 
-%% Similarity Index
-% Comparing similarity index
-%Computationally Heavy;
-%PLEASE do individually for all images to check similarity
-%Ie change i valus manually.
- for i  = 1 : size_data
-Number_of_pixel_changes = sum(sum(Img_4d{i}(:,:,4)));
-Total_pixel = size(Img_4d{i}(:,:,4),1) * size(Img_4d{i}(:,:,4),2);
-Similarity_index (i) = (Total_pixel - Number_of_pixel_changes) / Total_pixel;
- end
+function encodeCharacterAtPixel(images, originalIndices, modifiedIndices, ...
+                              origIdx, modIdx, origPos, modPos, rgbDelta)
+    % Encode character by modifying pixel values
+    
+    % Get original pixel value
+    originalPixel = images{originalIndices(origIdx)}(origPos(1), origPos(2), :);
+    
+    % Handle edge case for very bright pixels
+    if any(originalPixel > 254)
+        originalPixel(:) = 0;
+    end
+    
+    % Copy original pixel to modified image
+    images{modifiedIndices(modIdx)}(modPos(1), modPos(2), :) = originalPixel;
+    
+    % Add encoded RGB deltas
+    images{modifiedIndices(modIdx)}(modPos(1), modPos(2), 1) = ...
+        images{modifiedIndices(modIdx)}(modPos(1), modPos(2), 1) + rgbDelta(1);
+    images{modifiedIndices(modIdx)}(modPos(1), modPos(2), 2) = ...
+        images{modifiedIndices(modIdx)}(modPos(1), modPos(2), 2) + rgbDelta(2);
+    images{modifiedIndices(modIdx)}(modPos(1), modPos(2), 3) = ...
+        images{modifiedIndices(modIdx)}(modPos(1), modPos(2), 3) + rgbDelta(3);
+end
 
-% % %  USE UNDER OWN TIME- This function is more accurate but 
-% % %  Is too process exhaustive. So will consume a lot of time.
-% % % %  for i = 1 : size_data
-% % % %      x = ssim(Img{i}(:,:,1:3), Img_4d{i}(:,:,1:3));
-% % % %  end
- 
-% plot(x);
+function saveEncodedImages(images, originalPath)
+    % Save all encoded images to output folder
+    [parentPath, ~, ~] = fileparts(originalPath);
+    outputPath = fullfile(parentPath, 'Encoded Output Folder');
+    
+    if ~exist(outputPath, 'dir')
+        mkdir(outputPath);
+    end
+    
+    imageFiles = dir([originalPath, '/*']);
+    imageFiles = imageFiles(~[imageFiles.isdir]);
+    
+    for i = 1:length(images)
+        filename = fullfile(outputPath, imageFiles(i).name);
+        rgbImage = images{i}(:, :, 1:3); % Remove 4th channel
+        imwrite(rgbImage, filename, 'Mode', 'lossless');
+    end
+    
+    fprintf('Encoded images saved to: %s\n', outputPath);
+end
+
+function similarityIndex = calculateSimilarityIndex(images4D)
+    % Calculate similarity index for each image
+    numImages = length(images4D);
+    similarityIndex = zeros(numImages, 1);
+    
+    for i = 1:numImages
+        modifiedPixels = sum(sum(images4D{i}(:, :, 4)));
+        totalPixels = size(images4D{i}(:, :, 4), 1) * size(images4D{i}(:, :, 4), 2);
+        similarityIndex(i) = (totalPixels - modifiedPixels) / totalPixels;
+    end
+end
+
+function displayEncodingResults(stats, similarityIndex)
+    % Display encoding statistics
+    fprintf('\n=== ENCODING RESULTS ===\n');
+    fprintf('Characters encoded: %d\n', stats.processedPixels);
+    fprintf('Images modified: %d\n', stats.modifiedImages);
+    fprintf('Average similarity index: %.4f\n', mean(similarityIndex));
+    fprintf('Min similarity index: %.4f\n', min(similarityIndex));
+    fprintf('Max similarity index: %.4f\n', max(similarityIndex));
+end
